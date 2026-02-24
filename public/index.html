@@ -1,0 +1,264 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pollinations Web UI</title>
+  <style>
+    :root{color-scheme:dark}
+    body{margin:0;font-family:system-ui;background:#0b0f17;color:#e8eefc}
+    .wrap{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:12px;grid-template-columns:420px 1fr}
+    @media(max-width:980px){.wrap{grid-template-columns:1fr}}
+    .card{background:#0f1626;border:1px solid #1e2a44;border-radius:14px;padding:14px}
+    textarea,input,select{width:100%;background:#0b1220;border:1px solid #233252;color:#e8eefc;border-radius:10px;padding:10px;outline:none}
+    textarea{min-height:120px;resize:vertical}
+    label{display:block;font-size:12px;opacity:.85;margin:10px 0 6px}
+    .row{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+    button{cursor:pointer;border:1px solid #2a3b61;background:#16233d;color:#e8eefc;padding:10px 12px;border-radius:12px;font-weight:700}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .btns{display:grid;gap:10px;grid-template-columns:1fr 1fr;margin-top:12px}
+    .imgbox{background:#070b12;border:1px dashed #2a3b61;border-radius:14px;min-height:360px;display:grid;place-items:center;overflow:hidden}
+    img{width:100%;height:auto;display:none}
+    .meta{font-size:12px;opacity:.8;word-break:break-all;line-height:1.4}
+    .top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+    .status{font-size:12px;opacity:.8}
+    .pill{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;opacity:.9}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="top">
+        <b>Pollinations Generator (Proxy)</b>
+        <div class="status" id="status">Ready</div>
+      </div>
+
+      <label>Prompt</label>
+      <textarea id="prompt" placeholder="Type your prompt..."></textarea>
+
+      <div class="row">
+        <div>
+          <label>Model</label>
+          <select id="model">
+            <option value="flux">flux</option>
+            <option value="turbo">turbo</option>
+          </select>
+        </div>
+        <div>
+          <label>Seed (blank=random)</label>
+          <input id="seed" type="number" placeholder="42"/>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Width</label>
+          <input id="width" type="number" value="1024" min="16" max="2048"/>
+        </div>
+        <div>
+          <label>Height</label>
+          <input id="height" type="number" value="1024" min="16" max="2048"/>
+        </div>
+      </div>
+
+      <div class="pill"><input id="enhance" type="checkbox"> enhance</div>
+      <div class="pill"><input id="nologo" type="checkbox"> nologo (may require account)</div>
+      <div class="pill"><input id="private" type="checkbox"> private</div>
+      <div class="pill"><input id="safe" type="checkbox"> safe</div>
+
+      <hr style="border:0;border-top:1px solid #1e2a44;margin:12px 0">
+
+      <b>Settings</b>
+      <div class="pill" title="Not recommended. Better: keep key in .env on server.">
+        <input id="useKey" type="checkbox">
+        Send private key from UI (unsafe)
+      </div>
+      <label>Private Key (only used if checkbox enabled)</label>
+      <input id="key" type="password" placeholder="sk_..." autocomplete="off"/>
+
+      <div class="btns">
+        <button id="gen">Generate</button>
+        <button id="regen">Regen (new seed)</button>
+        <button id="download" disabled>Download</button>
+        <button id="copyurl" disabled>Copy URL</button>
+      </div>
+
+      <div class="meta" style="margin-top:10px">
+        Backend: <code>/api/generate</code> (keeps key server-side if you don’t enable the unsafe option).
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="top">
+        <b>Preview</b>
+        <button id="open" disabled>Open</button>
+      </div>
+      <div class="imgbox">
+        <div id="hint" class="meta" style="padding:16px;text-align:center">No image yet.</div>
+        <img id="img" alt="generated"/>
+      </div>
+      <div class="meta" style="margin-top:10px">
+        <b>Last URL:</b>
+        <div id="url">—</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  const statusEl = $("status");
+  const imgEl = $("img");
+  const hintEl = $("hint");
+  const urlEl = $("url");
+
+  const btnGen = $("gen");
+  const btnRegen = $("regen");
+  const btnDl = $("download");
+  const btnCopy = $("copyurl");
+  const btnOpen = $("open");
+
+  let lastBlobUrl = "";
+  let lastImageUrlHeader = "";
+
+  async function loadModels() {
+    try {
+      const r = await fetch("/api/models");
+      const models = await r.json();
+      if (!Array.isArray(models) || !models.length) return;
+      const sel = $("model");
+      const cur = sel.value;
+      sel.innerHTML = "";
+      models.forEach(m => {
+        const o = document.createElement("option");
+        o.value = String(m);
+        o.textContent = String(m);
+        sel.appendChild(o);
+      });
+      if ([...sel.options].some(o=>o.value===cur)) sel.value = cur;
+    } catch {}
+  }
+
+  function setStatus(s){ statusEl.textContent = s; }
+
+  function getBody(forceNewSeed=false){
+    const prompt = $("prompt").value.trim();
+    if (!prompt) return null;
+
+    let seed = $("seed").value.trim();
+    if (forceNewSeed || seed === "") {
+      seed = String(Math.floor(Math.random()*1e9));
+      $("seed").value = seed;
+    }
+
+    return {
+      prompt,
+      model: $("model").value,
+      width: Number($("width").value || 1024),
+      height: Number($("height").value || 1024),
+      seed,
+      enhance: $("enhance").checked,
+      nologo: $("nologo").checked,
+      private: $("private").checked,
+      safe: $("safe").checked
+    };
+  }
+
+  async function generate(forceNewSeed=false){
+    const body = getBody(forceNewSeed);
+    if (!body) return setStatus("Add a prompt");
+
+    setStatus("Generating…");
+    btnDl.disabled = true;
+    btnCopy.disabled = true;
+    btnOpen.disabled = true;
+
+    hintEl.style.display = "block";
+    hintEl.textContent = "Generating…";
+    imgEl.style.display = "none";
+
+    // cleanup old blob
+    if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+    lastBlobUrl = "";
+    lastImageUrlHeader = "";
+
+    const headers = { "Content-Type":"application/json" };
+
+    // UNSAFE option (you asked for it)
+    if ($("useKey").checked) {
+      const k = $("key").value.trim();
+      if (!k) return setStatus("Key missing");
+      headers["X-Pollinations-Token"] = k;
+    }
+
+    const r = await fetch("/api/generate", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+
+    if (!r.ok) {
+      const t = await r.text().catch(()=> "");
+      setStatus("Failed");
+      hintEl.textContent = t || "Request failed";
+      return;
+    }
+
+    lastImageUrlHeader = r.headers.get("x-image-url") || "";
+    urlEl.textContent = lastImageUrlHeader || "—";
+
+    const blob = await r.blob();
+    lastBlobUrl = URL.createObjectURL(blob);
+
+    imgEl.onload = () => {
+      setStatus("Done");
+      hintEl.style.display = "none";
+      imgEl.style.display = "block";
+      btnDl.disabled = false;
+      btnCopy.disabled = !lastImageUrlHeader;
+      btnOpen.disabled = !lastImageUrlHeader;
+    };
+    imgEl.onerror = () => {
+      setStatus("Preview failed");
+      hintEl.textContent = "Preview failed";
+      hintEl.style.display = "block";
+      imgEl.style.display = "none";
+    };
+
+    imgEl.src = lastBlobUrl;
+  }
+
+  async function download(){
+    if (!lastBlobUrl) return;
+    const a = document.createElement("a");
+    a.href = lastBlobUrl;
+    a.download = `pollinations_${$("seed").value || "seed"}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  async function copyUrl(){
+    if (!lastImageUrlHeader) return;
+    try {
+      await navigator.clipboard.writeText(lastImageUrlHeader);
+      setStatus("URL copied");
+    } catch {
+      setStatus("Copy failed");
+    }
+  }
+
+  btnGen.onclick = () => generate(false);
+  btnRegen.onclick = () => generate(true);
+  btnDl.onclick = download;
+  btnCopy.onclick = copyUrl;
+  btnOpen.onclick = () => lastImageUrlHeader && window.open(lastImageUrlHeader, "_blank", "noopener,noreferrer");
+
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") generate(false);
+  });
+
+  loadModels();
+</script>
+</body>
+</html>
